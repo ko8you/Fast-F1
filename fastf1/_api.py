@@ -1362,6 +1362,7 @@ def driver_info(path, response=None, livedata=None):
         # does not need any further processing
         _logger.info("Loading driver list")
         response = livedata.get('DriverList')
+        return default_driver_info(response)
     elif response is None:
         _logger.info("Fetching driver list...")
         response = fetch_page(path, 'driver_list')
@@ -1416,6 +1417,33 @@ def driver_info(path, response=None, livedata=None):
         if 'RacingNumber' not in list(drv_info.values())[0]:
             return dict()
         return drv_info
+
+
+EMPTY_DRIVER_INFO = {
+    "RacingNumber": "",
+    "BroadcastName": "F LAST",
+    "FullName": "First LAST",
+    "Tla": "LAS",
+    "Line": 0,
+    "TeamName": "Team Racing",
+    "TeamColour": "",
+    "FirstName": "First",
+    "LastName": "Last",
+    "Reference": "FIRLAS00",
+    "CountryCode": "COU",
+    "HeadshotUrl": "",
+}
+
+
+def default_driver_info(response):
+    driver_info = dict()
+    for entry in response:
+        drv_list = entry[1]
+        for drv_num in drv_list:
+            if drv_num not in driver_info:
+                driver_info[drv_num] = EMPTY_DRIVER_INFO.copy()
+                driver_info[drv_num]["RacingNumber"] = drv_num
+    return driver_info
 
 
 @Cache.api_request_wrapper
