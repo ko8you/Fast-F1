@@ -228,7 +228,7 @@ def _align_laps(laps_data, stream_data):
                 try:
                     gap_str = _get_gap_str_for_drv(drv, offset, laps_data,
                                                    stream_data)
-                    if 'LAP' in gap_str:
+                    if 'L' in gap_str:
                         leader = drv
                     else:
                         expected_gap[drv] = to_timedelta(gap_str)
