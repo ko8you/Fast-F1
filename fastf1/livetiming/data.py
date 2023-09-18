@@ -86,7 +86,7 @@ class LiveTimingData:
     def _load_single_file(self, fname):
         # read one file, parse its content and add it to the already loaded
         # data (if there is data already)
-        with open(fname, 'r') as fobj:
+        with open(fname, 'r', encoding="utf-8") as fobj:
             data = fobj.readlines()
 
         # try to find the correct start date (only if this is the first file)

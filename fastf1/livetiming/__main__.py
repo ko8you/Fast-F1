@@ -11,10 +11,10 @@ def save(args):
 
 
 def convert(args):
-    with open(args.input, 'r') as infile:
+    with open(args.input, 'r', encoding="utf-8") as infile:
         messages = infile.readlines()
     data, ec = messages_from_raw(messages)
-    with open(args.output, 'w') as outfile:
+    with open(args.output, 'w', encoding="utf-8") as outfile:
         for elem in data:
             outfile.write(str(elem)+'\n')
     print(f"Completed with {ec} error(s)")

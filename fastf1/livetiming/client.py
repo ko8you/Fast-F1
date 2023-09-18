@@ -138,7 +138,7 @@ class SignalRClient:
             self.logger.exception("Exception while writing message to file")
 
     async def _run(self):
-        self._output_file = open(self.filename, self.filemode)
+        self._output_file = open(self.filename, self.filemode, encoding="utf-8")
         # Create connection
         session = requests.Session()
         session.headers = self.headers
