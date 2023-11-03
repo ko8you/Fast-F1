@@ -44,7 +44,7 @@ import re
 from functools import cached_property
 import warnings
 import typing
-from typing import Optional, List, Iterable, Union, Tuple, Any
+from typing import Optional, List, Literal, Iterable, Union, Tuple, Any
 
 import numpy as np
 import pandas as pd
@@ -370,7 +370,7 @@ class Telemetry(pd.DataFrame):
     def merge_channels(
             self,
             other: Union["Telemetry", pd.DataFrame],
-            frequency: Union[int, str] = None
+            frequency: Union[int, Literal['original'], None] = None
     ):
         """Merge telemetry objects containing different telemetry channels.
 
@@ -378,7 +378,7 @@ class Telemetry(pd.DataFrame):
         missing values will be interpolated.
 
         :attr:`Telemetry.TELEMETRY_FREQUENCY` determines if and how the data is resampled. This can be overridden using
-        the `frequency` keyword fo this method.
+        the `frequency` keyword for this method.
 
         Merging and resampling:
 
@@ -406,7 +406,8 @@ class Telemetry(pd.DataFrame):
 
         Args:
             other: Object to be merged with self
-            frequency: Optional frequency to overwrite global preset.
+            frequency: Optional frequency to overwrite the default value set by
+                :attr:`~Telemetry.TELEMETRY_FREQUENCY`.
                 (Either string 'original' or integer for a frequency in Hz)
         """
         # merge the data and interpolate missing; 'Date' needs to be the index
@@ -1336,7 +1337,7 @@ class Session:
                     result = d1.copy()
                     result.reset_index(drop=True, inplace=True)
                     result['Driver'] = [driver, ]
-                    result['NumberOfLaps'] = 0
+                    result['NumberOfLaps'] = 1
                     result['Time'] = data['Time'].min()
                     result['IsPersonalBest'] = False
                     result['Compound'] = d2['Compound'].iloc[0]
@@ -1419,6 +1420,11 @@ class Session:
             # set missing lap start times to pit out time where possible
             mask = pd.isna(result['LapStartTime']) & (~pd.isna(result['PitOutTime']))
             result.loc[mask, 'LapStartTime'] = result.loc[mask, 'PitOutTime']
+
+            # remove first lap pitout time if it is before session_start_time
+            mask = (result["PitOutTime"] < self.session_start_time) & \
+                   (result["NumberOfLaps"] == 1)
+            result.loc[mask, 'PitOutTime'] = pd.NaT
 
             # create total laps counter for each tyre used
             for npit in result['Stint'].unique():
@@ -1866,6 +1872,7 @@ class Session:
             prev_lap = None
             integrity_errors = 0
             for _, lap in self.laps[self.laps['DriverNumber'] == drv].iterrows():
+                lap_integrity_ok = True
                 # require existence, non-existence and specific values for some variables
                 check_1 = (pd.isnull(lap['PitInTime'])
                            & pd.isnull(lap['PitOutTime'])
@@ -1883,7 +1890,7 @@ class Session:
                                           lap['LapTime'].total_seconds(),
                                           atol=0.003, rtol=0, equal_nan=False)
                     if not check_2:
-                        integrity_errors += 1
+                        lap_integrity_ok = False
                 else:
                     check_2 = False  # data not available means fail
 
@@ -1893,16 +1900,44 @@ class Session:
                 else:
                     check_3 = True  # no previous lap, no SC error
 
-                result = check_1 and check_2 and check_3
+                pre_check_4 = (((not pd.isnull(lap['Time']))
+                               & (not pd.isnull(lap['LapTime'])))
+                               and (prev_lap is not None)
+                               and (not pd.isnull(prev_lap['Time'])))
+
+                if pre_check_4:  # needed condition for check_4
+                    time_diff = np.sum((lap['Time'],
+                                        -1 * prev_lap['Time'])).total_seconds()
+                    lap_time = lap['LapTime'].total_seconds()
+                    # If the difference between the two times is within a
+                    # certain tolerance, the lap time data is considered
+                    # to be valid.
+                    check_4 = np.allclose(time_diff, lap_time,
+                                          atol=0.003, rtol=0, equal_nan=False)
+
+                    if not check_4:
+                        lap_integrity_ok = False
+
+                else:
+                    check_4 = True
+
+                if not lap_integrity_ok:
+                    integrity_errors += 1
+
+                result = check_1 and check_2 and check_3 and check_4
                 is_accurate.append(result)
                 prev_lap = lap
 
             if len(is_accurate) > 0:
-                self._laps.loc[self.laps['DriverNumber'] == drv, 'IsAccurate'] = is_accurate
+                self._laps.loc[
+                    self.laps['DriverNumber'] == drv, 'IsAccurate'
+                ] = is_accurate
             else:
-                _logger.warning("Failed to perform lap accuracy check - all "
-                                "laps marked as inaccurate.")
-                self.laps['IsAccurate'] = False  # default should be inaccurate
+                _logger.warning(f"Failed to perform lap accuracy check - all "
+                                f"laps marked as inaccurate (driver {drv})")
+                self._laps.loc[
+                    self.laps['DriverNumber'] == drv, 'IsAccurate'
+                ] = False  # default should be inaccurate
 
             # necessary to explicitly cast to bool
             self._laps[['IsAccurate']] \
@@ -2474,22 +2509,34 @@ class Laps(pd.DataFrame):
             instance of :class:`Telemetry`"""
         return self.get_telemetry()
 
-    def get_telemetry(self) -> Telemetry:
+    def get_telemetry(self,
+                      *,
+                      frequency: Union[int, Literal['original'], None] = None
+                      ) -> Telemetry:
         """Telemetry data for all laps in `self`
 
-        Telemetry data is the result of merging the returned data from :meth:`get_car_data` and :meth:`get_pos_data`.
-        This means that telemetry data at least partially contains interpolated values! Telemetry data additionally
-        already has computed channels added (e.g. Distance).
+        Telemetry data is the result of merging the returned data from
+        :meth:`get_car_data` and :meth:`get_pos_data`. This means that
+        telemetry data at least partially contains interpolated values!
+        Telemetry data additionally already has computed channels added
+        (e.g. Distance).
 
-        This method is provided for convenience and compatibility reasons. But using it does usually not produce
-        the most accurate possible result.
-        It is recommended to use :meth:`get_car_data` or :meth:`get_pos_data` when possible. This is also faster if
-        merging of car and position data is not necessary and if not all computed channels are needed.
+        This method is provided for convenience and compatibility reasons. But
+        using it does usually not produce the most accurate possible result.
+        It is recommended to use :meth:`get_car_data` or :meth:`get_pos_data`
+        when possible. This is also faster if merging of car and position data
+        is not necessary and if not all computed channels are needed.
 
         Resampling during merging is done according to the frequency set by
         :attr:`~Telemetry.TELEMETRY_FREQUENCY`.
 
-        .. note:: Telemetry can only be returned if `self` contains laps of one driver only.
+        .. note:: Telemetry can only be returned if `self` contains laps of one
+            driver only.
+
+        Args:
+            frequency: Optional frequency to overwrite the default value set by
+                :attr:`~Telemetry.TELEMETRY_FREQUENCY`.
+                (Either string 'original' or integer for a frequency in Hz)
 
         Returns:
             instance of :class:`Telemetry`
@@ -2505,8 +2552,8 @@ class Laps(pd.DataFrame):
                      'Date', 'Time', 'SessionTime')]
 
         car_data = car_data.add_distance().add_relative_distance()
-        car_data = car_data.merge_channels(drv_ahead)
-        merged = pos_data.merge_channels(car_data)
+        car_data = car_data.merge_channels(drv_ahead, frequency=frequency)
+        merged = pos_data.merge_channels(car_data, frequency=frequency)
         return merged.slice_by_lap(self, interpolate_edges=True)
 
     def get_car_data(self, **kwargs) -> Telemetry:
@@ -2908,6 +2955,34 @@ class Laps(pd.DataFrame):
         """
         return self[pd.isnull(self['PitInTime']) & pd.isnull(self['PitOutTime'])]
 
+    def pick_box_laps(self, which: str = 'both') -> "Laps":
+        """Return all laps which are either in-laps, out-laps, or both.
+        Note: a lap could be an in-lap and an out-lap at the same time.
+        In that case, it will get returned regardless of the 'which'
+        parameter.
+
+        Args:
+            which (str): one of 'in'/'out'/'both'
+
+                - which='in': only laps in which the driver entered
+                  the pit lane are returned
+                - which='out': only laps in which the driver exited
+                  the pit lane are returned
+                - which='both': both in-laps and out-laps are returned
+
+        Returns:
+            instance of :class:`Laps`
+        """
+        if which == 'in':
+            return self[~pd.isnull(self['PitInTime'])]
+        elif which == 'out':
+            return self[~pd.isnull(self['PitOutTime'])]
+        elif which == 'both':
+            return self[~pd.isnull(self['PitInTime'])
+                        | ~pd.isnull(self['PitOutTime'])]
+        else:
+            raise ValueError(f"Invalid value '{which}' for kwarg 'which'")
+
     def pick_not_deleted(self) -> "Laps":
         """Return all laps whose lap times are NOT deleted.
 
@@ -3050,20 +3125,32 @@ class Lap(pd.Series):
             instance of :class:`Telemetry`"""
         return self.get_telemetry()
 
-    def get_telemetry(self) -> Telemetry:
+    def get_telemetry(self,
+                      *,
+                      frequency: Union[int, Literal['original'], None] = None
+                      ) -> Telemetry:
         """Telemetry data for this lap
 
-        Telemetry data is the result of merging the returned data from :meth:`get_car_data` and :meth:`get_pos_data`.
-        This means that telemetry data at least partially contains interpolated values! Telemetry data additionally
-        already has computed channels added (e.g. Distance).
+        Telemetry data is the result of merging the returned data from
+        :meth:`get_car_data` and :meth:`get_pos_data`. This means that
+        telemetry data at least partially contains interpolated values!
+        Telemetry data additionally already has computed channels added
+        (e.g. Distance).
 
-        This method is provided for convenience and compatibility reasons. But using it does usually not produce
-        the most accurate possible result.
-        It is recommended to use :meth:`get_car_data` or :meth:`get_pos_data` when possible. This is also faster if
-        merging of car and position data is not necessary and if not all computed channels are needed.
+        This method is provided for convenience and compatibility reasons. But
+        using it does usually not produce the most accurate possible result.
+        It is recommended to use :meth:`get_car_data` or :meth:`get_pos_data`
+        when possible. This is also faster if merging of car and position data
+        is not necessary and if not all computed channels are needed.
 
         Resampling during merging is done according to the frequency set by
-        :attr:`~Telemetry.TELEMETRY_FREQUENCY`.
+        :attr:`~Telemetry.TELEMETRY_FREQUENCY` if not overwritten with the
+        ``frequency`` argument.
+
+        Args:
+            frequency: Optional frequency to overwrite default value set by
+                :attr:`~Telemetry.TELEMETRY_FREQUENCY`.
+                (Either string 'original' or integer for a frequency in Hz)
 
         Returns:
             instance of :class:`Telemetry`
@@ -3071,7 +3158,7 @@ class Lap(pd.Series):
         pos_data = self.get_pos_data(pad=1, pad_side='both')
         car_data = self.get_car_data(pad=1, pad_side='both')
 
-        # calculate driver ahead from from data without padding to
+        # calculate driver ahead from data without padding to
         # prevent out of bounds errors
         drv_ahead = car_data.iloc[1:-1] \
             .add_driver_ahead() \
@@ -3079,8 +3166,8 @@ class Lap(pd.Series):
                      'Date', 'Time', 'SessionTime')]
 
         car_data = car_data.add_distance().add_relative_distance()
-        car_data = car_data.merge_channels(drv_ahead)
-        merged = pos_data.merge_channels(car_data)
+        car_data = car_data.merge_channels(drv_ahead, frequency=frequency)
+        merged = pos_data.merge_channels(car_data, frequency=frequency)
         return merged.slice_by_lap(self, interpolate_edges=True)
 
     def get_car_data(self, **kwargs) -> Telemetry:
@@ -3237,7 +3324,7 @@ class SessionResults(pd.DataFrame):
 
         - ``GridPosition`` | :class:`float` |
           The drivers starting position (values only given if session is
-          'Race', 'Sprint', or 'Sprint Qualifying')
+          'Race', 'Sprint', 'Sprint Shootout' or 'Sprint Qualifying')
 
         - ``Q1`` | :class:`pd.Timedelta` |
           The drivers best Q1 time (values only given if session is
@@ -3253,15 +3340,15 @@ class SessionResults(pd.DataFrame):
 
         - ``Time`` | :class:`pd.Timedelta` |
           The drivers total race time (values only given if session is
-          'Race', 'Sprint', or 'Sprint Qualifying' and the driver was not
-          more than one lap behind the leader)
+          'Race', 'Sprint', 'Sprint Shootout' or 'Sprint Qualifying' and the
+          driver was not more than one lap behind the leader)
 
         - ``Status`` | :class:`str` |
           A status message to indicate if and how the driver finished the race
           or to indicate the cause of a DNF. Possible values include but are
           not limited to 'Finished', '+ 1 Lap', 'Crash', 'Gearbox', ...
-          (values only given if session is 'Race', 'Sprint', or
-          'Sprint Qualifying')
+          (values only given if session is 'Race', 'Sprint', 'Sprint Shootout'
+          or 'Sprint Qualifying')
 
         - ``Points`` | :class:`float` |
           The number of points received by each driver for their finishing

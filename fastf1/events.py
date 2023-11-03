@@ -41,7 +41,8 @@ DataFrame columns or Series values:
     Usually, this is the same as the date of the last session.
 
   - ``EventFormat`` | :class:`str` |
-    The format of the event. One of 'conventional', 'sprint', 'testing'.
+    The format of the event. One of 'conventional', 'sprint',
+    'sprint_shootout', 'testing'.
 
   - ``Session*`` | :class:`str` |
     The name of the session. One of 'Practice 1', 'Practice 2', 'Practice 3',
@@ -109,7 +110,7 @@ Multiple event (schedule) related functions and methods make use of a session
 identifier to differentiate between the various sessions of one event.
 This identifier can currently be one of the following:
 
-    - session name abbreviation: ``'FP1', 'FP2', 'FP3', 'Q', 'S', 'SS', R'``
+    - session name abbreviation: ``'FP1', 'FP2', 'FP3', 'Q', 'S', 'SS', 'R'``
     - full session name: ``'Practice 1', 'Practice 2',
       'Practice 3', 'Sprint', 'Sprint Shootout', 'Qualifying', 'Race'``;
       provided names will be normalized, so that the name is
@@ -606,15 +607,21 @@ def _get_schedule_from_f1_timing(year):
         data['EventName'].append(event['Name'])
         data['OfficialEventName'].append(event['OfficialName'])
 
-        n_events = min(len(event['Sessions']), 5)
+        # select only valid sessions
+        sessions = list()
+        for ses in event['Sessions']:
+            if (ses.get('Key') != -1) and ses.get('Name'):
+                sessions.append(ses)
+
+        n_events = min(len(sessions), 5)
         # number of events, usually 3 for testing, 5 for race weekends
         # in special cases there are additional unrelated events
 
-        if (n_events >= 4) and ('Sprint' in event['Sessions'][3]['Name']):
-            if event['Sessions'][3]['Name'] == 'Sprint Qualifying':
+        if (n_events >= 4) and ('Sprint' in sessions[3]['Name']):
+            if sessions[3]['Name'] == 'Sprint Qualifying':
                 # fix for 2021 where Sprint was called Sprint Qualifying
-                event['Sessions'][3]['Name'] = 'Sprint'
-            if event['Sessions'][2]['Name'] == 'Sprint Shootout':
+                sessions[3]['Name'] = 'Sprint'
+            if sessions[2]['Name'] == 'Sprint Shootout':
                 data['EventFormat'].append('sprint_shootout')
             else:
                 data['EventFormat'].append('sprint')
@@ -631,7 +638,7 @@ def _get_schedule_from_f1_timing(year):
         for i in range(0, 5):
             # parse the up to five sessions for each event
             try:
-                session = event['Sessions'][i]
+                session = sessions[i]
             except IndexError:
                 data[f'Session{i+1}'].append(None)
                 data[f'Session{i+1}Date'].append(None)
@@ -728,6 +735,9 @@ def _get_schedule_from_ergast(year) -> "EventSchedule":
 
 class EventSchedule(pd.DataFrame):
     """This class implements a per-season event schedule.
+
+    For detailed information about the information that is available for each
+    event, see `Event Schedule Data`_.
 
     This class is usually not instantiated directly. You should use
     :func:`fastf1.get_event_schedule` to get an event schedule for a specific
@@ -893,7 +903,7 @@ class EventSchedule(pd.DataFrame):
         name and officialName of each event. This is not guaranteed to return
         the correct result. You should therefore always check if the function
         actually returns the event you had wanted.
-        To gurantee the function returns the event queried, toggle
+        To guarantee the function returns the event queried, toggle
         strict_search, which will only return an event if its event name
         matches (non case sensitive) the query string.
 
@@ -926,6 +936,9 @@ class Event(pd.Series):
 
     Each event consists of one or multiple sessions, depending on the type
     of event and depending on the event format.
+
+    For detailed information about the information that is available for each
+    event, see `Event Schedule Data`_.
 
     This class is usually not instantiated directly. You should use
     :func:`fastf1.get_event` or similar to get a specific event.
